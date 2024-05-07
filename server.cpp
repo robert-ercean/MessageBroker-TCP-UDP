@@ -145,7 +145,7 @@ void send_shutdown_to_intruder(int sockfd) {
 
 bool sub_is_interesed_in_topic(subscriber& sub, char *topic) {
     auto it = find(sub.topics.begin(), sub.topics.end(), topic);
-    return it != sub.topics.end();
+    return (it != sub.topics.end() && sub.online);
 }
 
 /* Returns a vector of subs that should be of new additions to the argument
@@ -153,8 +153,9 @@ bool sub_is_interesed_in_topic(subscriber& sub, char *topic) {
 vector<subscriber> get_subs_by_topic(char *topic) {
     vector<subscriber> interested_subs;
     for (auto& sub : subs) {
-        if (sub_is_interesed_in_topic(sub, topic))
+        if (sub_is_interesed_in_topic(sub, topic)) {
             interested_subs.push_back(sub);
+        }
     }
     return interested_subs;
 }
@@ -263,7 +264,7 @@ void handle_shutdown_sub(int tcp_subscriber_fd) {
     /* Remove the closed FD from the global FD array */
     int idx = get_poll_struc_by_fd(tcp_subscriber_fd);
     DIE(idx == -1, "get poll struc by fd failed in handle shutdown!\n");
-    for (int i = 0; i < sv_fds_count - 1; i++) {
+    for (int i = idx; i < sv_fds_count - 1; i++) {
         sv_fds[i] = sv_fds[i + 1];
     }
     sv_fds[sv_fds_count - 1] = {0};
@@ -342,7 +343,7 @@ void start_server() {
             DIE(ret < 0 || ret > MAX_UDP_PACKET_LEN, "recvfrom failed!\n");
             parse_udp_packet(&from);
         /* Received a message through the connection sockets with the TCP clients */
-        } else {
+        } else if (sv_fds_count > 3) {
             for (int i = 3; i < sv_fds_count; i++) {
                 if ((sv_fds[i].revents & POLLIN) != 0) {
                     parse_tcp_client_message(sv_fds[i].fd);
