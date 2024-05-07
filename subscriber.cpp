@@ -11,9 +11,10 @@ char *sv_ip;
 char *id;
 int connection_fd;
 /* sub_fds[0] -> STDIN
- * sub_fds[1] -> TCP SV CONN SOCKET */
+ * sub_fds[1] -> TCP SUBSCRIBER-SERVER SOCKET */
 struct pollfd sub_fds[SUBSCRIBER_MAX_CONS];
 char buff[MAX_LEN];
+char topic[MAX_TOPIC];
 
 /* Parses the server port, ip and unique subscriber ID */
 void parse_args(char **argv) {
@@ -54,19 +55,19 @@ void connect_to_server() {
     connection_fd = create_sub_tcp_sock();
 
     int len = sizeof(connect_payload) + sizeof(tcp_hdr);
-    char buffer[len] = {0};
 
-    tcp_hdr *hdr = (tcp_hdr *)buffer;
+    tcp_hdr *hdr = (tcp_hdr *)buff;
     hdr->action = CONNECT_ACTION;
     hdr->len = sizeof(connect_payload);
     
-    connect_payload *payload = (connect_payload *)(buffer + sizeof(tcp_hdr));
+    connect_payload *payload = (connect_payload *)(buff + sizeof(tcp_hdr));
     memcpy(payload->id, id, MAX_ID);
     /* Send to the server the CONNECT ACTION TCP type packet that contains
      * the TCP header and the unique ID of the subscriber*/
-    send_tcp_packet(connection_fd, buffer);
+    send_tcp_packet(connection_fd, buff);
 }
 
+/* Shutdown the socket and then close it */
 void shutdown_and_close_conn_fd() {
     int ret = shutdown(connection_fd, SHUT_RDWR);
     DIE(ret == -1, "shutdown error!\n");
@@ -74,18 +75,60 @@ void shutdown_and_close_conn_fd() {
     exit(0);
 }
 
+void subscribe() {
+    /* Ignore string "subscribe" */
+    char *tmp = buff;
+    tmp += sizeof(SUBSCRIBE);
+    sscanf(tmp, "%s", topic);
+
+    /* Build TCP header with payload of type SUBSCRIBE ACTION */
+    CLEAR_BUFFER(buff, MAX_LEN);
+    tcp_hdr *hdr = (tcp_hdr *)buff;
+    hdr->action = SUBSCRIBE_ACTION;
+    hdr->len = strlen(topic) + 1; /* Include null terminator */
+    subscribe_payload *payload = (subscribe_payload *)(buff + sizeof(tcp_hdr));
+    memcpy(payload->topic, topic, strlen(topic) + 1);
+    int ret = send_tcp_packet(connection_fd, buff);
+    DIE(ret != (sizeof(tcp_hdr) + strlen(topic) + 1),
+    "wrong number of bytes send in subscribe action!\n");
+}
+
+void unsubscribe() {
+
+}
+
+void parse_stdin_command() {
+    fgets(buff, MAX_LINE, stdin);
+    buff[strlen(buff) - 1] = '\0'; /* Remove newline */
+    
+    if (strncmp(EXIT, buff, 4) == 0) {
+        shutdown_and_close_conn_fd();
+    } else if (strncmp(SUBSCRIBE, buff, 9) == 0) {
+        subscribe();
+    } else if (strncmp(UNSUBSCRIBE, buff, 11) == 0) {
+        unsubscribe();
+    } else {
+        fprintf(stderr, "Wrong command format!\n");
+    }
+}
+
 void run_subscriber() {
     while (true) {
+        CLEAR_BUFFER(buff, MAX_LEN);
+        CLEAR_BUFFER(topic, MAX_TOPIC);
         poll(sub_fds, SUBSCRIBER_MAX_CONS, -1);
         /* STDIN */
         if ((sub_fds[0].revents & POLLIN) != 0) {
-            
+            parse_stdin_command();
         }
         /* TCP SV CONN SOCK */
         else if ((sub_fds[1].revents & POLLIN) != 0) {
             int ret = recv_tcp_packet(connection_fd, buff);
             tcp_hdr *packet = (tcp_hdr *)buff;
             switch (packet->action) {
+                /* This signal indicates that we tried to connect to the server
+                 * with an already existing ID, so we need to shutdown & close
+                 * the socket and this (intruder) subscriber's program */
                 case SHUTDOWN_CLOSE: {
                     shutdown_and_close_conn_fd();
                 }
@@ -99,7 +142,7 @@ int main(int argc, char **argv) {
 
     DIE(argc != EXPECTED_ARGC, "Wrong argument count!\n");
 
-    CLEAR_BUFFER();
+    CLEAR_BUFFER(buff, MAX_LEN);
 
     parse_args(argv);
 

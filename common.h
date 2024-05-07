@@ -19,12 +19,24 @@
 #include "strucs.h"
 
 #define MAX_LEN 1 << 12
-#define MAX_ID 4
+#define MAX_LINE 1 << 8
+#define MAX_UDP_PACKET_LEN (51 + 1 + 1500)
+
+#define EXIT "exit"
+#define SUBSCRIBE "subscribe"
+#define UNSUBSCRIBE "unsubscribe"
 
 #define SHUTDOWN_CLOSE 2  
 #define CONNECT_ACTION 1
+#define SUBSCRIBE_ACTION 3
+#define NOTIFICATION_ACTION 4
 
-#define CLEAR_BUFFER() memset(buff, 0, MAX_LEN)
+#define INT 0
+#define SHORT_REAL 1
+#define FLOAT 2
+#define STRING 3
+
+#define CLEAR_BUFFER(buff, len) memset(buff, 0, len)
 
 void get_basic_sock_addr_in_template(struct sockaddr_in *sv_addr, int port, uint32_t ip);
 int create_sv_tcp_sock(int port, uint32_t ip);

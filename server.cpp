@@ -48,7 +48,7 @@ int create_sv_tcp_sock(int port, uint32_t ip) {
     /* Disable Nagle's algorithm */
     int disable = 1;
     int ret = setsockopt(sv_tcp_sock_fd, IPPROTO_TCP, TCP_NODELAY, &disable, sizeof(int));
-    DIE(ret < 0, "setsockopt - nagle\n");
+    DIE(ret < 0, "setsockopt - nagle failed\n");
 
     /* What happens if a program with open sockets on a given IP address + TCP port combo 
      * closes its sockets, and then a brief time later, a program comes 
@@ -56,7 +56,7 @@ int create_sv_tcp_sock(int port, uint32_t ip) {
      * (Typical case: A program is killed and is quickly restarted.)
      * The option below allows the new program to re-bind to that IP/port combo.
      * In stacks with BSD sockets interfaces — essentially all Unixes and Unix-like systems,
-     * you have to ask for this behavior by setting the SO_REUSEADDR option
+     * you have to ask for this behavior by setting t he SO_REUSEADDR option
      * via setsockopt() before you call bind().
      * Source: https://stackoverflow.com/questions/3229860/what-is-the-meaning-of-so-reuseaddr-setsockopt-option-linux
      * Chose to use this when I was browsing stackoverflow for multiplexing TCP implementations
@@ -85,12 +85,16 @@ int create_sv_udp_sock(int port, uint32_t ip) {
     int sv_udp_sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
     DIE(sv_udp_sock_fd < 0, "RIP sv_udp_sock_fd creation\n");
 
+    int make_sock_reusable = 1;
+    int ret = setsockopt(sv_udp_sock_fd, SOL_SOCKET, SO_REUSEADDR, &make_sock_reusable, sizeof(int));
+	DIE (ret < 0, "making addr reusable failed!\n");
+
     struct sockaddr_in sv_addr;
     get_basic_sock_addr_in_template(&sv_addr, port, ip);
 
     /* Bind socket fd to the port and server ip address as given
      * in the homework */
-    int ret = bind(sv_udp_sock_fd, (const struct sockaddr *)&sv_addr, sizeof(struct sockaddr_in));
+    ret = bind(sv_udp_sock_fd, (const struct sockaddr *)&sv_addr, sizeof(struct sockaddr_in));
     DIE(ret < 0, "bind in udp socket");
 
     return sv_udp_sock_fd;
@@ -126,13 +130,14 @@ char *check_and_add_sub_id(int sockfd) {
     new_sub.id = recv_id;
     new_sub.online = true;
     new_sub.topics = NULL;
+    new_sub.topics_count = 0;
     subs.push_back(new_sub);
 
     return recv_id;
 }
 
 void send_shutdown_to_intruder(int sockfd) {
-    CLEAR_BUFFER();
+    CLEAR_BUFFER(buff, MAX_LEN);
     tcp_hdr *hdr = (tcp_hdr *)buff;
     hdr->action = SHUTDOWN_CLOSE;
     /* We need just the action type, no payload */
@@ -140,12 +145,113 @@ void send_shutdown_to_intruder(int sockfd) {
     send_tcp_packet(sockfd, buff);
 }
 
+void send_packet_to_subscribers(tcp_hdr* packet_hdr) {
+
+}
+
+void parse_udp_packet(struct sockaddr *udp_sender_addr) {
+    tcp_hdr *hdr = (tcp_hdr *)malloc(sizeof(notification) + sizeof(tcp_hdr));
+    notification *packet = (notification *)((char *)hdr + sizeof(tcp_hdr));
+
+    /* Copy the topic string */
+    memcpy(packet->topic, buff, 50);
+    /* Make sure the topic inside the received UDP-packet is null-terminated */
+    packet->topic[50] = '\0';
+
+    /* Copy the data type */
+    memcpy(&packet->type, buff + 50, sizeof(char));
+    
+    /* Decide the next length to be copied, since it the payload's length
+     * varies with the data type */
+    int len;
+    int type = int(*(buff + 50));
+    switch (type) {
+        case INT: {
+            len = 5; /* Sign byte + sizeof (uint32_t)*/
+            break;
+        }
+        case SHORT_REAL: {
+            len = 2; /* sizeof(uint16_t) */
+            break;
+        }
+        case FLOAT: {
+            len = 5; /* Sign byte + sizeof (uint32_t)*/
+            break;
+        }
+        case STRING: {
+            len = 1501;
+            break;
+        }
+    }
+    /* Copy the payload */
+    memcpy(&packet->payload, buff + 51, len);
+    
+    /* Find the real length of the payload string in case we are 
+     * dealing with a string, it can be null terminated before the
+     * maximum length, so avoid sending useless bytes, also be sure
+     * to add the null terminator in case we're dealing with a maximum 
+     * string of length 1500 */
+    if (type == STRING) {
+        packet->payload[1500] = '\0';
+        int actual_len = strlen(packet->payload);
+        len = actual_len + 1;
+    }
+
+    /* Get the sender's IP addr and port and stuff it inside the packet */
+    inet_ntop(AF_INET, udp_sender_addr, packet->ip, MAX_IP);
+    sockaddr_in *tmp = (sockaddr_in *)udp_sender_addr;
+    packet->port= ntohs(tmp->sin_port);
+
+    /* Adjust the total payload length, as per the protocol desires */
+    int total_packet_len = 51 + 1 + 4 + 16 + len;
+    hdr->action = NOTIFICATION_ACTION;
+    hdr->len = total_packet_len;
+
+    /* Check subscribers subbed to this topic and send this packet to them */
+    send_packet_to_subscribers(hdr);
+}
+
+subscriber *get_subscriber_by_fd(int tcp_subscriber_fd) {
+    for (subscriber& sub : subs) {
+        if (sub.fd == tcp_subscriber_fd) {
+            return &sub;
+        }
+    }
+    return NULL;
+}
+
+
+void handle_subscribe(int tcp_subscriber_fd, tcp_hdr *hdr) {
+    int len = hdr->len;
+    subscriber *sub = get_subscriber_by_fd(tcp_subscriber_fd);
+    DIE(sub == NULL, "get_subscriber_by_fd failed!\n");
+    if (!sub->topics) {
+        sub->topics = (char **)malloc(1 * sizeof(*(sub->topics)));
+        sub->topics[sub]
+    }
+    sub->topics++;
+}
+
+/* Parses the action that was sent through the TCP connection socket 
+ * by one of the subscribers */
+void parse_tcp_client_message(int tcp_subscriber_fd) {
+    int ret = recv_tcp_packet(tcp_subscriber_fd, buff);
+    DIE(ret < 0, "recv_tcp_packet failed while parsing tcp client msg!\n");
+
+    tcp_hdr *hdr = (tcp_hdr *)buff;
+    switch (hdr->action) {
+        case SUBSCRIBE_ACTION: {
+            handle_subscribe(tcp_subscriber_fd, hdr);
+        }
+    }
+}
+
 void start_server() {
     int sv_tcp_sock_fd = sv_fds[1].fd;
     int ret = listen(sv_tcp_sock_fd, BACKLOG_MAX);
     DIE(ret < 0, "listen failed!\n");
     while(true) {
-        CLEAR_BUFFER();
+        CLEAR_BUFFER(buff, MAX_LEN);
         ret = poll(sv_fds, sv_fds_count, -1);
         DIE(ret < 0, "poll failed!\n");
         /* STDIN */
@@ -175,6 +281,20 @@ void start_server() {
         }
         /* UDP DATAGRAMS SOCK */
         else if ((sv_fds[2].revents & POLLIN) != 0) {
+            /* Received new topics from the UDP clients */
+            int udp_con_fd = sv_fds[2].fd;
+            struct sockaddr from;
+            socklen_t addr_len = sizeof(struct sockaddr);
+            int ret = recvfrom(udp_con_fd, buff, MAX_UDP_PACKET_LEN, 0, &from, &addr_len);
+            DIE(ret < 0 || ret > MAX_UDP_PACKET_LEN, "recvfrom failed!\n");
+            parse_udp_packet(&from);
+        /* Received a message through the connection sockets with the TCP clients */
+        } else {
+            for (int i = 3; i < sv_fds_count; i++) {
+                if ((sv_fds[i].revents & POLLIN) != 0) {
+                    parse_tcp_client_message(sv_fds[i].fd);
+                }
+            }
         }
     }
 }
@@ -184,7 +304,7 @@ int main(int argc, char **argv) {
     
     DIE(argc != EXPECTED_ARGC, "Wrong argument count!\n");
 
-    CLEAR_BUFFER();
+    CLEAR_BUFFER(buff, MAX_LEN);
 
     sv_port = atoi(argv[1]);
     
