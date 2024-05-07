@@ -49,7 +49,7 @@ int create_sub_tcp_sock() {
 
 /* Creates the TCP socket through which the subscriber and the server
  * will communicate and sends a TCP packet to the server of type CONNECT that is
- * telling the server that this subscriber wants to establish a subscription
+ * telling the server that this subscriber wants to establish a connection
  * */
 void connect_to_server() {
     connection_fd = create_sub_tcp_sock();
@@ -58,21 +58,35 @@ void connect_to_server() {
 
     tcp_hdr *hdr = (tcp_hdr *)buff;
     hdr->action = CONNECT_ACTION;
-    hdr->len = sizeof(connect_payload);
+    hdr->len = strlen(id) + 1;
     
     connect_payload *payload = (connect_payload *)(buff + sizeof(tcp_hdr));
-    memcpy(payload->id, id, MAX_ID);
+    memcpy(payload->id, id, hdr->len);
     /* Send to the server the CONNECT ACTION TCP type packet that contains
      * the TCP header and the unique ID of the subscriber*/
     send_tcp_packet(connection_fd, buff);
 }
 
-/* Shutdown the socket and then close it */
+/* Shutdown the socket, close it and then exit the program */
 void shutdown_and_close_conn_fd() {
     int ret = shutdown(connection_fd, SHUT_RDWR);
     DIE(ret == -1, "shutdown error!\n");
     close(connection_fd);
     exit(0);
+}
+
+/* Received the exit command through stdin, so signal the server
+ * we're closing the socket so it can do it too on the other end */
+void handle_shutdown() {
+    CLEAR_BUFFER(buff, MAX_LEN);
+
+    tcp_hdr *hdr = (tcp_hdr *)buff;
+    hdr->len = 0;
+    hdr->action = SHUTDOWN_CLOSE;
+    int ret = send_tcp_packet(connection_fd, buff);
+    DIE(ret < 0, "send tcp packet failed in handle shutdown!\n");
+
+    shutdown_and_close_conn_fd();
 }
 
 void subscribe() {
@@ -88,13 +102,16 @@ void subscribe() {
     hdr->len = strlen(topic) + 1; /* Include null terminator */
     subscribe_payload *payload = (subscribe_payload *)(buff + sizeof(tcp_hdr));
     memcpy(payload->topic, topic, strlen(topic) + 1);
+    
+    /* Send packet on its way, bye-bye! */
     int ret = send_tcp_packet(connection_fd, buff);
     DIE(ret != (sizeof(tcp_hdr) + strlen(topic) + 1),
     "wrong number of bytes send in subscribe action!\n");
+    fprintf(stdout, "Subscribed to topic %s\n", payload->topic);
 }
 
 void unsubscribe() {
-
+    
 }
 
 void parse_stdin_command() {
@@ -102,13 +119,52 @@ void parse_stdin_command() {
     buff[strlen(buff) - 1] = '\0'; /* Remove newline */
     
     if (strncmp(EXIT, buff, 4) == 0) {
-        shutdown_and_close_conn_fd();
+        handle_shutdown();
     } else if (strncmp(SUBSCRIBE, buff, 9) == 0) {
         subscribe();
     } else if (strncmp(UNSUBSCRIBE, buff, 11) == 0) {
         unsubscribe();
     } else {
         fprintf(stderr, "Wrong command format!\n");
+    }
+}
+
+void parse_notification() {
+    tcp_hdr *packet_hdr = (tcp_hdr *)buff;
+    notification *packet = (notification *)((char *)buff + sizeof(tcp_hdr));
+
+    fprintf(stdout, "%s:%d - %s - ", packet->ip, packet->port, packet->topic);
+
+    switch(packet->type) {
+        case INT: {
+            char sgn = packet->payload[0];
+            uint32_t num = ntohl(*((uint32_t *)(packet->payload + 1)));
+            num = (sgn == 1) ? -num : num;
+            fprintf(stdout, "INT - %d\n", num);
+            break;
+        }
+        case SHORT_REAL: {
+            uint16_t num = ntohs(*((uint16_t *)packet->payload));
+            float tmp = (float) num / 100;
+            fprintf(stdout, "SHORT_REAL - %.2f\n", tmp);
+            break;
+        }
+        case FLOAT: {
+            char sgn = packet->payload[0];
+            uint32_t num = ntohl(*((uint32_t *)(packet->payload + 1)));
+            uint8_t exp = *((uint8_t *)(packet->payload + 5));
+            float tmp = (float) num;
+            for (int i = 0; i < exp; i++) {
+                tmp /= 10;
+            }
+            tmp = (sgn == 1) ? -tmp : tmp;
+            fprintf(stdout, "FLOAT - %.4f\n", tmp);
+            break;
+        }
+        case STRING: {
+            fprintf(stdout, "STRING - %s\n", packet->payload);
+            break;
+        }
     }
 }
 
@@ -129,8 +185,13 @@ void run_subscriber() {
                 /* This signal indicates that we tried to connect to the server
                  * with an already existing ID, so we need to shutdown & close
                  * the socket and this (intruder) subscriber's program */
-                case SHUTDOWN_CLOSE: {
+                case SHUTDOWN_INTRUDER: {
                     shutdown_and_close_conn_fd();
+                    break;
+                }
+                case NOTIFICATION_ACTION: {
+                    parse_notification();
+                    break;
                 }
             }
         }

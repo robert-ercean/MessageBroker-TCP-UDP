@@ -1,21 +1,21 @@
 #ifndef __STRUCT_H__
 #define __STRUCT_H__
 
+#include <string>
+
 #define MAX_ID 4
 /* Add 1 in case the topic string equals to 50, we'll need to manually
  * append the null-terminator */
 #define MAX_TOPIC 51
 #define MAX_IP 16
 
-typedef struct __attribute__((__packed__)) {
+typedef struct {
     /* TCP Socket FD associated with this subscriber */
     int fd;
     /* Subscriber's unique ID */
-    char *id;
+    char id[MAX_ID];
     /* Client's subscribed topics */
-    char **topics;
-    /* Indicates the number of topics this client is subscribed to */
-    int topics_count;
+    std::vector<std::string> topics;
     /* Flag indicating whether the client is online / offline */
     bool online;
 } subscriber;

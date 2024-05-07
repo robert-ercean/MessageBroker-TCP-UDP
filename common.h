@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include <netinet/tcp.h> /* For disabling Nagle's algorithm */
 #include <vector>
+#include <iostream>
+#include <algorithm> 
 
 #include "strucs.h"
 
@@ -26,10 +28,11 @@
 #define SUBSCRIBE "subscribe"
 #define UNSUBSCRIBE "unsubscribe"
 
-#define SHUTDOWN_CLOSE 2  
 #define CONNECT_ACTION 1
+#define SHUTDOWN_CLOSE 2  
 #define SUBSCRIBE_ACTION 3
 #define NOTIFICATION_ACTION 4
+#define SHUTDOWN_INTRUDER 5  
 
 #define INT 0
 #define SHORT_REAL 1

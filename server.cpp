@@ -31,7 +31,7 @@ void add_new_pollfd_struc(int fd) {
  */
 void push_basic_fds() {
     sv_fds_count = 0;
-    sv_fds = (pollfd *)malloc(BACKLOG_MAX * sizeof(pollfd));
+    sv_fds = (pollfd *)calloc(BACKLOG_MAX, sizeof(pollfd));
     add_new_pollfd_struc(STDIN_FILENO);
     add_new_pollfd_struc(create_sv_tcp_sock(sv_port, INADDR_ANY));
     add_new_pollfd_struc(create_sv_udp_sock(sv_port, INADDR_ANY));
@@ -105,21 +105,21 @@ int create_sv_udp_sock(int port, uint32_t ip) {
  * the client
  * @return -1 in case of error
  *          the new user ID if succesfull */
-char *check_and_add_sub_id(int sockfd) {
+char *check_and_add_new_sub(int sockfd) {
     tcp_hdr *packet_hdr = (tcp_hdr *)buff;
     connect_payload *payload = (connect_payload *)(buff + sizeof(tcp_hdr));
     char *recv_id = payload->id;
-
+    int id_len = strlen(payload->id) + 1;
     for (subscriber sub : subs) {
         /* Subscriber exists in the server's database, but is offline so
          * just adjust his status to "online" and update the new socket FD */
-        if (memcmp(sub.id, recv_id, MAX_ID) == 0 && !sub.online) {
+        if (strcmp(sub.id, recv_id) == 0 && !sub.online) {
             sub.fd = sockfd;
             sub.online = true;
         /* There is already an online subscriber with this ID in the 
          * server's database, so send the shutdown & close signal to
          * the (intruder) user */
-        } else if (memcmp(sub.id, recv_id, MAX_ID) == 0 && sub.online) {
+        } else if (strcmp(sub.id, recv_id) == 0 && sub.online) {
             fprintf(stdout, "Client %s already connected.\n", recv_id);
             return NULL;
         }
@@ -127,10 +127,8 @@ char *check_and_add_sub_id(int sockfd) {
 
     subscriber new_sub;
     new_sub.fd = sockfd;
-    new_sub.id = recv_id;
+    memcpy(new_sub.id, recv_id, id_len);
     new_sub.online = true;
-    new_sub.topics = NULL;
-    new_sub.topics_count = 0;
     subs.push_back(new_sub);
 
     return recv_id;
@@ -139,14 +137,37 @@ char *check_and_add_sub_id(int sockfd) {
 void send_shutdown_to_intruder(int sockfd) {
     CLEAR_BUFFER(buff, MAX_LEN);
     tcp_hdr *hdr = (tcp_hdr *)buff;
-    hdr->action = SHUTDOWN_CLOSE;
+    hdr->action = SHUTDOWN_INTRUDER;
     /* We need just the action type, no payload */
     hdr->len = 0;
     send_tcp_packet(sockfd, buff);
 }
 
-void send_packet_to_subscribers(tcp_hdr* packet_hdr) {
+bool sub_is_interesed_in_topic(subscriber& sub, char *topic) {
+    auto it = find(sub.topics.begin(), sub.topics.end(), topic);
+    return it != sub.topics.end();
+}
 
+/* Returns a vector of subs that should be of new additions to the argument
+ * topic */
+vector<subscriber> get_subs_by_topic(char *topic) {
+    vector<subscriber> interested_subs;
+    for (auto& sub : subs) {
+        if (sub_is_interesed_in_topic(sub, topic))
+            interested_subs.push_back(sub);
+    }
+    return interested_subs;
+}
+
+/* Sends a packet to each subscriber that is subbed to this packet's
+ * payload's topic */
+void send_packet_to_subscribers(tcp_hdr* packet_hdr) {
+    notification *packet = (notification *)((char *)packet_hdr + sizeof(tcp_hdr));
+    char *topic = packet->topic;
+    vector<subscriber> interested_subs = get_subs_by_topic(topic);
+    for (auto sub: interested_subs) {
+        send_tcp_packet(sub.fd, packet_hdr);
+    }
 }
 
 void parse_udp_packet(struct sockaddr *udp_sender_addr) {
@@ -175,11 +196,11 @@ void parse_udp_packet(struct sockaddr *udp_sender_addr) {
             break;
         }
         case FLOAT: {
-            len = 5; /* Sign byte + sizeof (uint32_t)*/
+            len = 6; /* Sign byte + sizeof (uint32_t) + uint8_t*/
             break;
         }
         case STRING: {
-            len = 1501;
+            len = 1501; /* Max str length + 1 in case we need to add \0 */
             break;
         }
     }
@@ -220,16 +241,44 @@ subscriber *get_subscriber_by_fd(int tcp_subscriber_fd) {
     return NULL;
 }
 
+int get_poll_struc_by_fd(int fd) {
+    for (int i = 0; i < sv_fds_count; i++) {
+        if (sv_fds[i].fd == fd)
+            return i;
+    }
+    return -1;
+}
+
+/* Shutsdown and closes the socket associated with the respecitve subscriber
+ * FD and handles the details of this action */
+void handle_shutdown_sub(int tcp_subscriber_fd) {
+    subscriber *sub = get_subscriber_by_fd(tcp_subscriber_fd);
+    DIE(!sub, "get sub failed in handle shutdown!\n");
+
+    shutdown(sub->fd, SHUT_RDWR);
+    close(sub->fd);
+    /* Mark the user as offline, since he might reconnect later */
+    sub->online = false;
+
+    /* Remove the closed FD from the global FD array */
+    int idx = get_poll_struc_by_fd(tcp_subscriber_fd);
+    DIE(idx == -1, "get poll struc by fd failed in handle shutdown!\n");
+    for (int i = 0; i < sv_fds_count - 1; i++) {
+        sv_fds[i] = sv_fds[i + 1];
+    }
+    sv_fds[sv_fds_count - 1] = {0};
+    sv_fds_count--;
+    fprintf(stdout, "Client %s disconnected.\n", sub->id);
+}
 
 void handle_subscribe(int tcp_subscriber_fd, tcp_hdr *hdr) {
     int len = hdr->len;
+    subscribe_payload *payload = (subscribe_payload *)((char *)hdr + sizeof(tcp_hdr)); 
+
     subscriber *sub = get_subscriber_by_fd(tcp_subscriber_fd);
     DIE(sub == NULL, "get_subscriber_by_fd failed!\n");
-    if (!sub->topics) {
-        sub->topics = (char **)malloc(1 * sizeof(*(sub->topics)));
-        sub->topics[sub]
-    }
-    sub->topics++;
+
+    sub->topics.push_back(payload->topic);
 }
 
 /* Parses the action that was sent through the TCP connection socket 
@@ -242,6 +291,11 @@ void parse_tcp_client_message(int tcp_subscriber_fd) {
     switch (hdr->action) {
         case SUBSCRIBE_ACTION: {
             handle_subscribe(tcp_subscriber_fd, hdr);
+            break;
+        }
+        case SHUTDOWN_CLOSE: {
+            handle_shutdown_sub(tcp_subscriber_fd);
+            break;
         }
     }
 }
@@ -268,10 +322,9 @@ void start_server() {
             /* Receive the subscriber's ID (TCP CONNECT ACTION TYPE) */
             ret = recv_tcp_packet(new_tcp_con_fd, buff);
             DIE (ret < 0, "recv connect action failed!\n");
-            char *ret_id = check_and_add_sub_id(new_tcp_con_fd);
+            char *ret_id = check_and_add_new_sub(new_tcp_con_fd);
             /* Send the shutdown & close signal to the (intruder)user */
             if (!ret_id) {
-                fprintf(stdout, "Sending shutdown signal to intruder!\n");
                 send_shutdown_to_intruder(new_tcp_con_fd);
                 continue;
             }
