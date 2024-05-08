@@ -111,12 +111,13 @@ char *check_and_add_new_sub(int sockfd) {
     connect_payload *payload = (connect_payload *)(buff + sizeof(tcp_hdr));
     char *recv_id = payload->id;
     int id_len = strlen(payload->id) + 1;
-    for (subscriber sub : subs) {
+    for (subscriber& sub : subs) {
         /* Subscriber exists in the server's database, but is offline so
          * just adjust his status to "online" and update the new socket FD */
         if (strcmp(sub.id, recv_id) == 0 && !sub.online) {
             sub.fd = sockfd;
             sub.online = true;
+            return sub.id;
         /* There is already an online subscriber with this ID in the 
          * server's database, so send the shutdown & close signal to
          * the (intruder) user */
@@ -179,7 +180,7 @@ bool sub_is_interesed_in_topic(subscriber& sub, char *topic) {
 vector<subscriber> get_subs_by_topic(char *topic) {
     vector<subscriber> interested_subs;
     for (auto& sub : subs) {
-        if (sub_is_interesed_in_topic(sub, topic)) {
+        if (sub_is_interesed_in_topic(sub, topic) && sub.online) {
             interested_subs.push_back(sub);
         }
     }
@@ -281,7 +282,6 @@ int get_poll_struc_by_fd(int fd) {
 void handle_shutdown_sub(int tcp_subscriber_fd) {
     subscriber *sub = get_subscriber_by_fd(tcp_subscriber_fd);
     DIE(!sub, "get sub failed in handle shutdown!\n");
-
     shutdown(sub->fd, SHUT_RDWR);
     close(sub->fd);
     /* Mark the user as offline, since he might reconnect later */

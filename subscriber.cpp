@@ -170,12 +170,11 @@ void parse_notification() {
             char sgn = packet->payload[0];
             uint32_t num = ntohl(*((uint32_t *)(packet->payload + 1)));
             uint8_t exp = *((uint8_t *)(packet->payload + 5));
-            float tmp = (float) num;
-            for (int i = 0; i < exp; i++) {
-                tmp /= 10;
-            }
-            tmp = (sgn == 1) ? -tmp : tmp;
-            fprintf(stdout, "FLOAT - %.4f\n", tmp);
+            double float_value = (float) num;
+            double offset = pow(10, exp);
+            double result = (float_value / offset);
+            result = (sgn == 1) ? -result : result;
+            fprintf(stdout, "FLOAT - %.*f\n", exp, result);
             break;
         }
         case STRING: {
