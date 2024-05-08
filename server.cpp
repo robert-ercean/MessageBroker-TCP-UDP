@@ -12,11 +12,18 @@ int sv_port;
  * sv_fds[2] = UDP DGRAMS SOCK */
 pollfd *sv_fds;
 int sv_fds_count;
+int sv_fds_capacity;
 char buff[MAX_LEN] = {0};
 vector<subscriber> subs;
 
 /* Adds a new pollfd struc to the global server's file descriptors array */
 void add_new_pollfd_struc(int fd) {
+    if (sv_fds_count == sv_fds_capacity) {
+        pollfd *tmp = (pollfd *)realloc(sv_fds, sv_fds_capacity * 2);
+        DIE (!tmp, "resizing global fd array failed!\n");
+        sv_fds_capacity *= 2;
+        sv_fds = tmp;
+    }
     struct pollfd new_struc;
     new_struc.fd = fd;
     new_struc.events = POLLIN;
@@ -32,6 +39,7 @@ void add_new_pollfd_struc(int fd) {
  */
 void push_basic_fds() {
     sv_fds_count = 0;
+    sv_fds_capacity = BACKLOG_MAX;
     sv_fds = (pollfd *)calloc(BACKLOG_MAX, sizeof(pollfd));
     add_new_pollfd_struc(STDIN_FILENO);
     add_new_pollfd_struc(create_sv_tcp_sock(sv_port, INADDR_ANY));
@@ -50,23 +58,6 @@ int create_sv_tcp_sock(int port, uint32_t ip) {
     int disable = 1;
     int ret = setsockopt(sv_tcp_sock_fd, IPPROTO_TCP, TCP_NODELAY, &disable, sizeof(int));
     DIE(ret < 0, "setsockopt - nagle failed\n");
-
-    /* What happens if a program with open sockets on a given IP address + TCP port combo 
-     * closes its sockets, and then a brief time later, a program comes 
-     * along and wants to listen on that same IP address and TCP port number?
-     * (Typical case: A program is killed and is quickly restarted.)
-     * The option below allows the new program to re-bind to that IP/port combo.
-     * In stacks with BSD sockets interfaces — essentially all Unixes and Unix-like systems,
-     * you have to ask for this behavior by setting the SO_REUSEADDR option
-     * via setsockopt() before you call bind().
-     * Source: https://stackoverflow.com/questions/3229860/what-is-the-meaning-of-so-reuseaddr-setsockopt-option-linux
-     * Chose to use this when I was browsing stackoverflow for multiplexing TCP implementations
-     * and came accross a thread where a user was getting a failed socket() call after
-     * restarting his program in a short time(less than a second).
-     */
-    int make_sock_reusable = 1;
-    ret = setsockopt(sv_tcp_sock_fd, SOL_SOCKET, SO_REUSEADDR, &make_sock_reusable, sizeof(int));
-	DIE (ret < 0, "making addr reusable failed!\n");
 
     struct sockaddr_in sv_addr;
     get_basic_sock_addr_in_template(&sv_addr, port, ip);
@@ -343,6 +334,32 @@ void parse_tcp_client_message(int tcp_subscriber_fd) {
     }
 }
 
+void shutdown_server() {
+    /* Skip STDIN FD, UDP AND TCP LISTENER SOCKET */
+    for (int i = 3; i < sv_fds_count; i++) {
+        /* Tell the subscriber to close his client before shutting 
+         * down the server */
+        CLEAR_BUFFER(buff, MAX_LEN);
+        tcp_hdr *hdr = (tcp_hdr *)buff;
+        hdr->action = SHUTDOWN_INTRUDER;
+        /* We need just the action type, no payload */
+        hdr->len = 0;
+        send_tcp_packet(sv_fds[i].fd, buff);
+
+        shutdown(sv_fds[i].fd, SHUT_RDWR);
+        close(sv_fds[i].fd);
+    }
+    /* Shutdown and close the UDP and TCP LISTENER SOCKET */
+    int tcp_sock = sv_fds[1].fd;
+    int udp_sock = sv_fds[2].fd;
+    shutdown(tcp_sock, SHUT_RDWR);
+    close(tcp_sock);
+
+    shutdown(udp_sock, SHUT_RDWR);
+    close(udp_sock);
+    exit(EXIT_SUCCESS);
+}
+
 void start_server() {
     int sv_tcp_sock_fd = sv_fds[1].fd;
     int ret = listen(sv_tcp_sock_fd, BACKLOG_MAX);
@@ -353,6 +370,8 @@ void start_server() {
         DIE(ret < 0, "poll failed!\n");
         /* STDIN */
         if ((sv_fds[0].revents & POLLIN) != 0) {
+            /* Only possible case is when we receive the shutdown signal */
+            shutdown_server();
         }
         /* TCP LISTENER SOCK */
         else if ((sv_fds[1].revents & POLLIN) != 0) {

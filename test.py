@@ -893,7 +893,7 @@ def h2_test():
           success = run_test_c2_stop(server, c2)
 
     # send all types of message 30 times in quick succesion and check
-    # run_test_quick_flow(c1, topics)
+    run_test_quick_flow(c1, topics)
 
   # close the server and check that C1 also closes
   run_test_server_stop(server, c1)
