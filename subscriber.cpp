@@ -111,7 +111,24 @@ void subscribe() {
 }
 
 void unsubscribe() {
+    /* Ignore string "unsubscribe" */
+    char *tmp = buff;
+    tmp += sizeof(UNSUBSCRIBE);
+    sscanf(tmp, "%s", topic);
+
+    /* Build TCP header with payload of type SUBSCRIBE ACTION */
+    CLEAR_BUFFER(buff, MAX_LEN);
+    tcp_hdr *hdr = (tcp_hdr *)buff;
+    hdr->action = UNSUBSCRIBE_ACTION;
+    hdr->len = strlen(topic) + 1; /* Include null terminator */
+    subscribe_payload *payload = (subscribe_payload *)(buff + sizeof(tcp_hdr));
+    memcpy(payload->topic, topic, strlen(topic) + 1);
     
+    /* Send packet on its way, bye-bye! */
+    int ret = send_tcp_packet(connection_fd, buff);
+    DIE(ret != (sizeof(tcp_hdr) + strlen(topic) + 1),
+    "wrong number of bytes send in subscribe action!\n");
+    fprintf(stdout, "Unsubscribed to topic %s\n", payload->topic);
 }
 
 void parse_stdin_command() {

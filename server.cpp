@@ -1,4 +1,5 @@
 #include "common.h"
+#include <regex>
 
 #define EXPECTED_ARGC 2
 #define BACKLOG_MAX 64
@@ -56,7 +57,7 @@ int create_sv_tcp_sock(int port, uint32_t ip) {
      * (Typical case: A program is killed and is quickly restarted.)
      * The option below allows the new program to re-bind to that IP/port combo.
      * In stacks with BSD sockets interfaces — essentially all Unixes and Unix-like systems,
-     * you have to ask for this behavior by setting t he SO_REUSEADDR option
+     * you have to ask for this behavior by setting the SO_REUSEADDR option
      * via setsockopt() before you call bind().
      * Source: https://stackoverflow.com/questions/3229860/what-is-the-meaning-of-so-reuseaddr-setsockopt-option-linux
      * Chose to use this when I was browsing stackoverflow for multiplexing TCP implementations
@@ -143,9 +144,34 @@ void send_shutdown_to_intruder(int sockfd) {
     send_tcp_packet(sockfd, buff);
 }
 
+/* MQTT style topics regex parser handling only one-level and multi-level
+ * wildcard options
+ * /////// BREAKS when the delimitator isn't a slash (/) *///////
+bool matches_topic(char *topic, string& pattern) {
+    /* Replace '+' with a regex pattern that matches one topic level */
+    regex plus_wc("\\+");
+    /* [^/]+ -> match any character that is not a slash up until we reach a slash */
+    string match_one_level_wildcard = regex_replace(pattern, plus_wc, "[^/]+");
+
+    /* Replace '*' with a regex pattern that matches multiple topic levels */
+    regex star_wc("\\*");
+    /* ".*" -> match zero ore more of any character */
+    string match_multi_level_wildcard = regex_replace(match_one_level_wildcard, star_wc, ".*");
+
+    /* Add regex specific string starter and terminator */
+    string full_regex_pattern = "^" + match_multi_level_wildcard + "$";
+    regex pattern_regex(full_regex_pattern);
+
+    /* Match the built regex with the topic */
+    return regex_match(topic, pattern_regex);
+}
+
 bool sub_is_interesed_in_topic(subscriber& sub, char *topic) {
-    auto it = find(sub.topics.begin(), sub.topics.end(), topic);
-    return (it != sub.topics.end() && sub.online);
+    for (string subbed_topic : sub.topics) {
+        if (matches_topic(topic, subbed_topic))
+            return true;
+    }
+    return false;
 }
 
 /* Returns a vector of subs that should be of new additions to the argument
@@ -277,9 +303,21 @@ void handle_subscribe(int tcp_subscriber_fd, tcp_hdr *hdr) {
     subscribe_payload *payload = (subscribe_payload *)((char *)hdr + sizeof(tcp_hdr)); 
 
     subscriber *sub = get_subscriber_by_fd(tcp_subscriber_fd);
-    DIE(sub == NULL, "get_subscriber_by_fd failed!\n");
+    DIE(sub == NULL, "get_subscriber_by_fd failed in subscribe!\n");
 
     sub->topics.push_back(payload->topic);
+}
+
+void handle_unsubscribe(int tcp_subscriber_fd, tcp_hdr *hdr) {
+    int len = hdr->len;
+    subscribe_payload *payload = (subscribe_payload *)((char *)hdr + sizeof(tcp_hdr)); 
+
+    subscriber *sub = get_subscriber_by_fd(tcp_subscriber_fd);
+    DIE(sub == NULL, "get_subscriber_by_fd in unsubscribe failed!\n");
+
+    auto iter = find(sub->topics.begin(), sub->topics.end(), payload->topic);
+    DIE(iter == sub->topics.end(), "Error: Subscriber is not subbed to this topic!\n");
+    sub->topics.erase(iter);
 }
 
 /* Parses the action that was sent through the TCP connection socket 
@@ -292,6 +330,10 @@ void parse_tcp_client_message(int tcp_subscriber_fd) {
     switch (hdr->action) {
         case SUBSCRIBE_ACTION: {
             handle_subscribe(tcp_subscriber_fd, hdr);
+            break;
+        }
+        case UNSUBSCRIBE_ACTION: {
+            handle_unsubscribe(tcp_subscriber_fd, hdr);
             break;
         }
         case SHUTDOWN_CLOSE: {
