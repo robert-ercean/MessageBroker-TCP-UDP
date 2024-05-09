@@ -36,6 +36,8 @@ typedef struct __attribute__((__packed__)) {
 typedef struct __attribute__((__packed__)) {
     char topic[MAX_TOPIC];
     unsigned int type;
+    /* max string length + 1 in case the string received isn't null-terminated,
+     * we'll need an aditional byte to manually add the null-terminator  */
     char payload[1501];
 } udp_packet;
 

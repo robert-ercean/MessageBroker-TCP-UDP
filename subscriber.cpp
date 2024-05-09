@@ -72,7 +72,7 @@ void shutdown_and_close_conn_fd() {
     int ret = shutdown(connection_fd, SHUT_RDWR);
     DIE(ret == -1, "shutdown error!\n");
     close(connection_fd);
-    exit(0);
+    exit(EXIT_SUCCESS);
 }
 
 /* Received the exit command through stdin, so signal the server
@@ -205,6 +205,10 @@ void run_subscriber() {
                     shutdown_and_close_conn_fd();
                     break;
                 }
+                case SHUTDOWN_CLOSE: {
+                    shutdown_and_close_conn_fd();
+                    break;
+                }
                 case NOTIFICATION_ACTION: {
                     parse_notification();
                     break;
@@ -218,7 +222,9 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, BUFSIZ);
 
     DIE(argc != EXPECTED_ARGC, "Wrong argument count!\n");
-
+    
+    /* Both the subscriber and the server utilise a global buffer for receving,
+     * sending, parsing data */
     CLEAR_BUFFER(buff, MAX_LEN);
 
     parse_args(argv);

@@ -136,8 +136,7 @@ void send_shutdown_to_intruder(int sockfd) {
     send_tcp_packet(sockfd, buff);
 }
 
-/* MQTT style topics regex parser handling only one-level and multi-level
- * wildcard options
+/* Regex parser handling only one-level and multi-level wildcard options
  * /////// BREAKS when the delimitator isn't a slash (/) *///////
 bool matches_topic(char *topic, string& pattern) {
     /* Replace '+' with a regex pattern that matches one topic level */
@@ -251,6 +250,8 @@ void parse_udp_packet(struct sockaddr *udp_sender_addr) {
     send_packet_to_subscribers(hdr);
 }
 
+/* Fetches the subscriber structure by its TCP SOCKET FD from
+ * the global subs array */
 subscriber *get_subscriber_by_fd(int tcp_subscriber_fd) {
     for (subscriber& sub : subs) {
         if (sub.fd == tcp_subscriber_fd) {
@@ -260,6 +261,8 @@ subscriber *get_subscriber_by_fd(int tcp_subscriber_fd) {
     return NULL;
 }
 
+/* Fetches the pollfd structure by its TCP SOCKET FD from
+ * the global pollfd array */
 int get_poll_struc_by_fd(int fd) {
     for (int i = 0; i < sv_fds_count; i++) {
         if (sv_fds[i].fd == fd)
@@ -289,6 +292,8 @@ void handle_shutdown_sub(int tcp_subscriber_fd) {
     fprintf(stdout, "Client %s disconnected.\n", sub->id);
 }
 
+/* Manages a subscriber's subscribe action, simply adds the
+ * respective topic to that sub's topics array */
 void handle_subscribe(int tcp_subscriber_fd, tcp_hdr *hdr) {
     int len = hdr->len;
     subscribe_payload *payload = (subscribe_payload *)((char *)hdr + sizeof(tcp_hdr)); 
@@ -299,6 +304,8 @@ void handle_subscribe(int tcp_subscriber_fd, tcp_hdr *hdr) {
     sub->topics.push_back(payload->topic);
 }
 
+/* Manages a subscriber's unsubscribe action, simply removes the
+ * respective topic from that sub's topics array */
 void handle_unsubscribe(int tcp_subscriber_fd, tcp_hdr *hdr) {
     int len = hdr->len;
     subscribe_payload *payload = (subscribe_payload *)((char *)hdr + sizeof(tcp_hdr)); 
@@ -334,6 +341,12 @@ void parse_tcp_client_message(int tcp_subscriber_fd) {
     }
 }
 
+/* Received the exit command from STDIN, time to close every open socket
+ * and send each online subscriber the SHUTDOWN__CLOSE signal to tell them
+ * it's time to close their client
+ * Don't have to worry about offline subscribers since once a subscriber
+ * goes offline, we simply remove the repsective FD from the global fds array,
+ * so we'll not reach that FD once we iterate in this func */
 void shutdown_server() {
     /* Skip STDIN FD, UDP AND TCP LISTENER SOCKET */
     for (int i = 3; i < sv_fds_count; i++) {
@@ -341,7 +354,7 @@ void shutdown_server() {
          * down the server */
         CLEAR_BUFFER(buff, MAX_LEN);
         tcp_hdr *hdr = (tcp_hdr *)buff;
-        hdr->action = SHUTDOWN_INTRUDER;
+        hdr->action = SHUTDOWN_CLOSE;
         /* We need just the action type, no payload */
         hdr->len = 0;
         send_tcp_packet(sv_fds[i].fd, buff);
@@ -357,6 +370,11 @@ void shutdown_server() {
 
     shutdown(udp_sock, SHUT_RDWR);
     close(udp_sock);
+
+    /* Free dynamically allocated memory */
+    free(sv_fds);
+
+    /* Bye, bye cruel world! (still better server than valve's servers smh)*/
     exit(EXIT_SUCCESS);
 }
 
@@ -419,6 +437,8 @@ int main(int argc, char **argv) {
     
     DIE(argc != EXPECTED_ARGC, "Wrong argument count!\n");
 
+    /* Both the subscriber and the server utilise a global buffer for receving,
+     * sending, parsing data */
     CLEAR_BUFFER(buff, MAX_LEN);
 
     sv_port = atoi(argv[1]);
